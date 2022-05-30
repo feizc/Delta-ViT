@@ -60,7 +60,7 @@ class ViTConfig(PretrainedConfig):
 
     def __init__(
         self,
-        num_labels=100,
+        num_labels=10,
         hidden_size=768,
         num_hidden_layers=12,
         num_attention_heads=12,
@@ -76,6 +76,7 @@ class ViTConfig(PretrainedConfig):
         num_channels=3,
         qkv_bias=True,
         encoder_stride=16,
+        
         **kwargs
     ):
         super().__init__(**kwargs)

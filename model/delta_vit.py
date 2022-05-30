@@ -1,20 +1,20 @@
 import torch 
-import torch.nn as nn
-from vit import ViTLayer, ViTPreTrainedModel, ViTEmbeddings, ViTPooler
-
+import torch.nn as nn 
+from .vit import ViTLayer, ViTPreTrainedModel, ViTEmbeddings, ViTPooler
 
 
 class Perturbator(nn.Module): 
     def __init__(self, config, bias=True, act=nn.Tanh): 
         super(Perturbator, self).__init__() 
         self.layers = nn.ModuleList()
-        for i in range(len(config.num_hidden_layers)):
+        for i in range(config.num_hidden_layers):
             self.layers.append(nn.Linear(config.hidden_size, 1, bias=bias)) 
             self.layers.append(act()) 
     
     def forward(self, hidden_states, index): 
         outputs = self.layers[2 * index](hidden_states) 
         outputs = self.layers[2 * index + 1](outputs) 
+        return outputs 
 
 
 
@@ -70,16 +70,9 @@ class DeltaViTEncoder(nn.Module):
     
 
     # one step for index layer
-    def step(
-        self,
-        hidden_states,
-        index
-    ):
+    def step(self, hidden_states, index):
         layer_outputs = self.layer[index](hidden_states) 
         return layer_outputs 
-
-
-
 
 
 class DeltaViTModel(ViTPreTrainedModel):
@@ -123,10 +116,9 @@ class DeltaViTModel(ViTPreTrainedModel):
             pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
         )
 
-        for i in range(len(self.num_layers)): 
+        for i in range(self.num_layers): 
             encoder_outputs = self.encoder.step(embedding_output, i)[0]
-            perturbations = self.perturbator(encoder_outputs, i)
-
+            perturbations = self.perturbator(encoder_outputs, i) # add learnable perturbations
             embedding_output = encoder_outputs + perturbations 
 
         sequence_output = embedding_output
@@ -134,6 +126,60 @@ class DeltaViTModel(ViTPreTrainedModel):
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
         
-        return (sequence_output, pooled_output) + encoder_outputs[1:]
+        return (sequence_output, pooled_output) + (encoder_outputs[1:],)
+
+
+
+class DeltaViTForImageClassification(ViTPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.num_labels = config.num_labels
+        self.vit = DeltaViTModel(config, add_pooling_layer=False)
+
+        # Classifier head
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+
+    def forward(
+        self,
+        pixel_values=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        interpolate_pos_encoding=None,
+        return_dict=None,
+    ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.vit(
+            pixel_values,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            interpolate_pos_encoding=interpolate_pos_encoding,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+
+        logits = self.classifier(sequence_output[:, 0, :])
+
+        
+        output = (logits,) + outputs[2:]
+        return output
+
+
+    def train_only_perturbator(self): 
+        for name, parameter in self.vit.named_parameters(): 
+            if 'perturbator' not in name:
+                parameter.requires_grad = False 
+        
+
+    def train_without_perturbator(self): 
+        for name, parameter in self.vit.named_parameters(): 
+            if 'perturbator' in name:
+                parameter.requires_grad = False 
 
 
