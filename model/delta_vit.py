@@ -18,6 +18,16 @@ class Perturbator(nn.Module):
 
 
 
+# referring https://openreview.net/pdf?id=OQ08SN70M1V 
+# adding representation with gaussion noise
+def add_gaussian_noise(hidden_states, eps=1e-5):
+    shape=hidden_states.size()
+    noise = torch.cuda.FloatTensor(shape) if torch.cuda.is_available() else torch.FloatTensor(shape)
+    torch.randn(shape, out=noise)
+    return noise*eps  
+
+
+
 class DeltaViTEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -83,7 +93,9 @@ class DeltaViTModel(ViTPreTrainedModel):
 
         self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
         self.encoder = DeltaViTEncoder(config) 
-        self.perturbator = Perturbator(config)
+
+        if config.add_learnable_perturbation == True:
+            self.perturbator = Perturbator(config)
 
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.pooler = ViTPooler(config) if add_pooling_layer else None
@@ -118,7 +130,10 @@ class DeltaViTModel(ViTPreTrainedModel):
 
         for i in range(self.num_layers): 
             encoder_outputs = self.encoder.step(embedding_output, i)[0]
-            perturbations = self.perturbator(encoder_outputs, i) # add learnable perturbations
+            if self.config.add_learnable_perturbation == True:
+                perturbations = self.perturbator(encoder_outputs, i) # add learnable perturbations
+            else: 
+                perturbations = add_gaussian_noise(encoder_outputs) 
             embedding_output = encoder_outputs + perturbations 
 
         sequence_output = embedding_output
@@ -183,3 +198,85 @@ class DeltaViTForImageClassification(ViTPreTrainedModel):
                 parameter.requires_grad = False 
 
 
+
+
+
+class EnsembleDeltaViT(ViTPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.num_labels = config.num_labels 
+        self.num_models = config.num_models
+        self.vit = DeltaViTModel(config, add_pooling_layer=False)
+        
+        # Classifier head 
+        self.classifier_list = nn.ModuleList() 
+        for i in range(self.num_models):
+            self.classifier_list.append(nn.Linear(config.hidden_size, config.num_labels))
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+
+    def forward(
+        self,
+        pixel_values=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        interpolate_pos_encoding=None,
+        return_dict=None,
+    ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.vit(
+            pixel_values,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            interpolate_pos_encoding=interpolate_pos_encoding,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+
+        logits_list = [] 
+
+        for i, layer_module in enumerate(self.classifier_list):
+            logits = layer_module(sequence_output[:, 0, :])
+            logits_list.append(logits)
+        
+        output = (logits_list,) + outputs[2:]
+        return output
+
+    def _train_without_bottom_layers(self): 
+        for _, parameter in self.vit.named_parameters(): 
+            parameter.requires_grad = False 
+
+
+
+
+class DeltaLoss:
+    def __init__(self, alpha=1.):
+        self.kl_loss = nn.KLDivLoss(reduction="batchmean") 
+        self.xe_loss = nn.CrossEntropyLoss() 
+        self.alpha = alpha 
+    
+    def _compute_kl_loss(self, predict_list): 
+        concat_list = torch.stack(predict_list) # (n_model, bsz, n_labels)
+        predict_avg = torch.mean(concat_list, dim=0).softmax(-1)
+        loss = 0 
+        for logits in predict_list: 
+            loss += self.kl_loss(logits.softmax(-1).log(), predict_avg) 
+        return loss
+
+    def _compute_xe_loss(self, predict_list, label): 
+        loss = 0 
+        for logits in predict_list: 
+            loss += self.xe_loss(logits, label) 
+        return loss
+
+
+    def __call__(self, predict_list, label):
+        loss = 0 
+        loss += self._compute_xe_loss(predict_list, label)
+        loss += self.alpha * self._compute_kl_loss(predict_list) 
+        return loss
