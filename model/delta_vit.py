@@ -24,7 +24,8 @@ def add_gaussian_noise(hidden_states, eps=1e-5):
     shape=hidden_states.size()
     noise = torch.cuda.FloatTensor(shape) if torch.cuda.is_available() else torch.FloatTensor(shape)
     torch.randn(shape, out=noise)
-    return noise*eps  
+    noise = noise.to(hidden_states.device)
+    return noise*eps
 
 
 
@@ -133,7 +134,7 @@ class DeltaViTModel(ViTPreTrainedModel):
             if self.config.add_learnable_perturbation == True:
                 perturbations = self.perturbator(encoder_outputs, i) # add learnable perturbations
             else: 
-                perturbations = add_gaussian_noise(encoder_outputs) 
+                perturbations = add_gaussian_noise(encoder_outputs)
             embedding_output = encoder_outputs + perturbations 
 
         sequence_output = embedding_output
@@ -216,6 +217,7 @@ class EnsembleDeltaViT(ViTPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+        self._train_without_bottom_layers()
 
 
     def forward(
@@ -228,13 +230,14 @@ class EnsembleDeltaViT(ViTPreTrainedModel):
     ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.vit(
-            pixel_values,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            interpolate_pos_encoding=interpolate_pos_encoding,
-            return_dict=return_dict,
-        )
+        with torch.no_grad():
+            outputs = self.vit(
+                pixel_values,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                interpolate_pos_encoding=interpolate_pos_encoding,
+                return_dict=return_dict,
+            )
 
         sequence_output = outputs[0]
 

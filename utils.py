@@ -33,14 +33,14 @@ def dataset_load(args):
     if 'cifar' in args.dataset_type: 
         data_path = os.path.join(args.data_path, 'cifar') 
     else:
-        data_path = os.path.join(args.data_path, 'imagenet')  
+        data_path = os.path.join(args.data_path, 'tiny-imagenet')  
 
     if args.dataset_type == 'cifar-10': 
         train_loader, test_loader = cifar10_data_load(data_path, args.batch_size) 
     elif args.dataset_type == 'cifar-100': 
         train_loader, test_loader = cifar100_data_load(data_path, args.batch_size) 
     else:
-        print('imagenet dataset not implemented!')
+        train_loader, test_loader = tiny_imagenet_load(data_path, args.batch_size)
     return train_loader, test_loader 
 
 
@@ -96,5 +96,18 @@ def cifar100_data_load(data_path, batch_size, distribution=False):
                                                   sampler=train_sampler) 
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, num_workers=8,
                                                   sampler=val_sampler) 
+
+    return train_loader, test_loader 
+
+
+def tiny_imagenet_load(data_path, batch_size, distribution=False):
+    num_label = 200 
+    train_transform, test_transform = image_preprocess_transform()  
+
+    trainset = datasets.ImageFolder(root=os.path.join(data_path, 'train'), transform=train_transform)
+    testset = datasets.ImageFolder(root=os.path.join(data_path, 'val'), transform=test_transform)
+
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     return train_loader, test_loader

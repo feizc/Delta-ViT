@@ -38,6 +38,8 @@ def train(train_loader, model, optimizer, loss_fn, epoch, args):
             running_loss += loss.item() 
             pbar.set_postfix(loss=running_loss / (it + 1))
             pbar.update() 
+            if (it + 1) % 10 == 0:
+                break
             if it % 10000 == 0:
                 torch.save({
                     'torch_rng_state': torch.get_rng_state(),
@@ -47,8 +49,8 @@ def train(train_loader, model, optimizer, loss_fn, epoch, args):
                     'epoch': epoch,
                     'state_dict': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
-                }, os.path.join(args.output_path, "latest.pth"),)
-            break 
+                }, os.path.join(args.output_path, args.model_type + "_latest.pth"),)
+            
 
 
 
@@ -78,7 +80,7 @@ def validation(test_loader, model, epoch, args):
 def main(): 
     parser = argparse.ArgumentParser() 
     parser.add_argument('--data_path', default='./data') 
-    parser.add_argument('--dataset_type', default='cifar-10') 
+    parser.add_argument('--dataset_type', default='tiny-imagenet')  # {'cifar-10', 'cifar-100', 'tiny-imagenet'}
     parser.add_argument('--vit_path', default='./ckpt/vit') 
     parser.add_argument('--output_path', default='./ckpt/delta-vit') 
     parser.add_argument('--batch_size', default=5) 
@@ -92,19 +94,19 @@ def main():
 
     # load model and optimizer 
     if args.model_type == 'ViT': 
-        config = ViTConfig(num_labels=100) 
+        config = ViTConfig(num_labels=200) 
         model = ViTForImageClassification(config) 
     elif args.model_type == 'DeltaViT':
-        config = ViTConfig(num_labels=100) 
+        config = ViTConfig(num_labels=200) 
         model = DeltaViTForImageClassification(config) 
     else:
-        config = EnsembleDeltaViTConfig(num_labels=100)
+        config = EnsembleDeltaViTConfig(num_labels=200)
         model = EnsembleDeltaViT(config)
     
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)  
 
     if args.load_from_last == True: 
-        fname = os.path.join(args.output_path, 'latest.pth') 
+        fname = os.path.join(args.output_path, args.model_type + "_latest.pth") 
         if os.path.exists(fname): 
             data = torch.load(fname)
             torch.set_rng_state(data['torch_rng_state'])
@@ -113,6 +115,11 @@ def main():
             random.setstate(data['random_rng_state'])
             model.load_state_dict(data['state_dict'], strict=False)
             optimizer.load_state_dict(data['optimizer']) 
+            
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
             print('load last trained ckpt!')
     else:
         model.vit.from_pretrained(args.vit_path) 
@@ -128,7 +135,7 @@ def main():
     for epoch in range(args.epochs): 
         train(train_loader, model, optimizer, loss_fn, epoch, args) 
         validation(test_loader, model, epoch, args)
-        break 
+        
 
 
 if __name__ == '__main__': 
